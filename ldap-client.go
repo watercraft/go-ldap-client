@@ -4,8 +4,10 @@ package ldap
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io/ioutil"
 
 	"gopkg.in/ldap.v2"
 )
@@ -25,6 +27,7 @@ type LDAPClient struct {
 	UseSSL             bool
 	SkipTLS            bool
 	ClientCertificates []tls.Certificate // Adding client certificates
+	CACertFiles        []string          // CA cert to verify ldaps server
 }
 
 // Connect connects to the ldap backend.
@@ -54,6 +57,17 @@ func (lc *LDAPClient) Connect() error {
 			if lc.ClientCertificates != nil && len(lc.ClientCertificates) > 0 {
 				config.Certificates = lc.ClientCertificates
 			}
+			if lc.CACertFiles != nil && len(lc.CACertFiles) > 0 {
+				caCertPool := x509.NewCertPool()
+				for _, certFile := range lc.CACertFiles {
+					caCert, err := ioutil.ReadFile(certFile)
+					if err != nil {
+						return err
+					}
+					caCertPool.AppendCertsFromPEM(caCert)
+				}
+				config.RootCAs = caCertPool
+			}
 			l, err = ldap.DialTLS("tcp", address, config)
 			if err != nil {
 				return err
@@ -73,19 +87,30 @@ func (lc *LDAPClient) Close() {
 	}
 }
 
-// Authenticate authenticates the user against the ldap backend.
-func (lc *LDAPClient) Authenticate(username, password string) (bool, map[string]string, error) {
+// Check the Bind DN user name and password
+func (lc *LDAPClient) CheckBindDN() error {
 	err := lc.Connect()
 	if err != nil {
-		return false, nil, err
+		return err
 	}
 
-	// First bind with a read only user
+	// Bind with a read only user
 	if lc.BindDN != "" && lc.BindPassword != "" {
 		err := lc.Conn.Bind(lc.BindDN, lc.BindPassword)
 		if err != nil {
-			return false, nil, err
+			return err
 		}
+	}
+
+	return nil
+}
+
+// Authenticate authenticates the user against the ldap backend.
+func (lc *LDAPClient) Authenticate(username, password string) (bool, map[string]string, error) {
+	// First bind with a read only user
+	err := lc.CheckBindDN()
+	if err != nil {
+		return false, nil, err
 	}
 
 	attributes := append(lc.Attributes, "dn")
